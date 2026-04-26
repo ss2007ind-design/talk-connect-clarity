@@ -51,16 +51,14 @@ function CallPage() {
 
   const start = useCallback(async () => {
     setError(null);
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      setStream(s);
-      if (videoRef.current) {
-        videoRef.current.srcObject = s;
-        await videoRef.current.play().catch(() => {});
-      }
 
-      const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (SR) {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    // 1) Start speech recognition FIRST, inside the user gesture.
+    // Some browsers (esp. Chrome) silently fail to deliver results if recognition
+    // is started after an awaited getUserMedia call — the user-gesture context is lost.
+    if (SR) {
+      try {
         const r = new SR();
         r.continuous = true;
         r.interimResults = true;
@@ -80,20 +78,52 @@ function CallPage() {
           setInterim(interimText);
         };
         r.onerror = (e: any) => {
-          if (e.error !== "no-speech" && e.error !== "aborted") setError(`Speech: ${e.error}`);
+          if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+            setError("Microphone permission denied. Click the 🔒 icon in your address bar and allow mic access, then try again.");
+          } else if (e.error === "audio-capture") {
+            setError("No microphone found. Please connect a mic and try again.");
+          } else if (e.error !== "no-speech" && e.error !== "aborted") {
+            setError(`Speech recognition: ${e.error}`);
+          }
         };
         r.onend = () => {
-          // Auto-restart while active
+          // Auto-restart while session is active
           if (recogRef.current === r) {
             try { r.start(); } catch {}
           }
         };
-        try { r.start(); } catch {}
+        r.start();
         recogRef.current = r;
+      } catch (err: any) {
+        console.warn("SpeechRecognition start failed:", err);
+      }
+    }
+
+    // 2) Then request camera + mic for the video preview.
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setStream(s);
+      if (videoRef.current) {
+        videoRef.current.srcObject = s;
+        await videoRef.current.play().catch(() => {});
       }
       setActive(true);
     } catch (e: any) {
-      setError(e?.message || "Could not access camera/mic");
+      // Tear down recognition if camera/mic failed
+      if (recogRef.current) {
+        const r = recogRef.current;
+        recogRef.current = null;
+        try { r.stop(); } catch {}
+      }
+      if (e?.name === "NotAllowedError") {
+        setError("Camera/mic permission denied. Allow access in your browser and try again.");
+      } else if (e?.name === "NotFoundError") {
+        setError("No camera or microphone found on this device.");
+      } else if (e?.name === "NotReadableError") {
+        setError("Your camera or mic is being used by another app. Close it and try again.");
+      } else {
+        setError(e?.message || "Could not access camera/mic");
+      }
     }
   }, []);
 
