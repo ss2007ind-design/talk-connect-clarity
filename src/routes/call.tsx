@@ -41,6 +41,7 @@ function CallPage() {
   const recogRef = useRef<any>(null);
   const transcriptRef = useRef<string>("");
   const lastAnalyzedRef = useRef<number>(0);
+  const activeRef = useRef(false);
 
   const analyzeFn = useServerFn(analyzeConversation);
 
@@ -51,83 +52,132 @@ function CallPage() {
 
   const start = useCallback(async () => {
     setError(null);
+    setInterim("");
 
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
-    // 1) Start speech recognition FIRST, inside the user gesture.
-    // Some browsers (esp. Chrome) silently fail to deliver results if recognition
-    // is started after an awaited getUserMedia call — the user-gesture context is lost.
-    if (SR) {
-      try {
-        const r = new SR();
-        r.continuous = true;
-        r.interimResults = true;
-        r.lang = "en-US";
-        r.onresult = (e: any) => {
-          let interimText = "";
-          let finalAdd = "";
-          for (let i = e.resultIndex; i < e.results.length; i++) {
-            const t = e.results[i][0].transcript;
-            if (e.results[i].isFinal) finalAdd += t + " ";
-            else interimText += t;
-          }
-          if (finalAdd) {
-            transcriptRef.current = (transcriptRef.current + " " + finalAdd).trim();
-            setTranscript(transcriptRef.current);
-          }
-          setInterim(interimText);
-        };
-        r.onerror = (e: any) => {
-          if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-            setError("Microphone permission denied. Click the 🔒 icon in your address bar and allow mic access, then try again.");
-          } else if (e.error === "audio-capture") {
-            setError("No microphone found. Please connect a mic and try again.");
-          } else if (e.error !== "no-speech" && e.error !== "aborted") {
-            setError(`Speech recognition: ${e.error}`);
-          }
-        };
-        r.onend = () => {
-          // Auto-restart while session is active
-          if (recogRef.current === r) {
-            try { r.start(); } catch {}
-          }
-        };
-        r.start();
-        recogRef.current = r;
-      } catch (err: any) {
-        console.warn("SpeechRecognition start failed:", err);
-      }
+    if (!window.isSecureContext) {
+      setError("Microphone access needs a secure HTTPS page.");
+      return;
     }
 
-    // 2) Then request camera + mic for the video preview.
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError("This browser does not support microphone access.");
+      return;
+    }
+
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) {
+      setSupported(false);
+      setError("Live speech recognition needs Chrome, Edge, or Safari.");
+      return;
+    }
+
     try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      if (navigator.permissions?.query) {
+        const micPermission = await navigator.permissions.query({ name: "microphone" as PermissionName });
+        if (micPermission.state === "denied") {
+          setError("Microphone is blocked. Click the 🔒 icon in your address bar, allow microphone access, then start again.");
+          return;
+        }
+      }
+
+      // Request the microphone by itself first, directly from the click handler.
+      // This avoids the whole call failing when the camera is unavailable or blocked.
+      const audioStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+
+      const audioTrack = audioStream.getAudioTracks()[0];
+      if (!audioTrack || audioTrack.readyState !== "live" || audioTrack.muted) {
+        audioStream.getTracks().forEach((track) => track.stop());
+        setError("Microphone connected, but no live audio is coming through. Check your browser/input settings.");
+        return;
+      }
+
+      let videoStream: MediaStream | null = null;
+      try {
+        videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      } catch {
+        // Keep the assistant usable even if the camera is unavailable.
+      }
+
+      const s = new MediaStream([
+        ...(videoStream?.getVideoTracks() ?? []),
+        ...audioStream.getAudioTracks(),
+      ]);
       setStream(s);
       if (videoRef.current) {
         videoRef.current.srcObject = s;
         await videoRef.current.play().catch(() => {});
       }
+
+      const r = new SR();
+      r.continuous = true;
+      r.interimResults = true;
+      r.lang = "en-US";
+      r.maxAlternatives = 1;
+      r.onstart = () => setError(null);
+      r.onaudiostart = () => setError(null);
+      r.onspeechstart = () => setInterim("Listening…");
+      r.onresult = (e: any) => {
+        let interimText = "";
+        let finalAdd = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const t = e.results[i][0].transcript;
+          if (e.results[i].isFinal) finalAdd += t + " ";
+          else interimText += t;
+        }
+        if (finalAdd) {
+          transcriptRef.current = (transcriptRef.current + " " + finalAdd).trim();
+          setTranscript(transcriptRef.current);
+        }
+        setInterim(interimText);
+      };
+      r.onerror = (e: any) => {
+        if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+          setError("Speech recognition is blocked. Allow microphone access in the browser, then start again.");
+        } else if (e.error === "audio-capture") {
+          setError("No microphone input detected. Choose the correct input device in browser settings.");
+        } else if (e.error !== "no-speech" && e.error !== "aborted") {
+          setError(`Speech recognition: ${e.error}`);
+        }
+      };
+      r.onend = () => {
+        if (activeRef.current && recogRef.current === r) {
+          window.setTimeout(() => {
+            try { r.start(); } catch {}
+          }, 250);
+        }
+      };
+
+      activeRef.current = true;
       setActive(true);
+      recogRef.current = r;
+      r.start();
     } catch (e: any) {
-      // Tear down recognition if camera/mic failed
+      activeRef.current = false;
       if (recogRef.current) {
         const r = recogRef.current;
         recogRef.current = null;
         try { r.stop(); } catch {}
       }
       if (e?.name === "NotAllowedError") {
-        setError("Camera/mic permission denied. Allow access in your browser and try again.");
+        setError("Microphone permission denied. Allow microphone access in your browser and try again.");
       } else if (e?.name === "NotFoundError") {
-        setError("No camera or microphone found on this device.");
+        setError("No microphone found. Connect a mic or choose the correct input device.");
       } else if (e?.name === "NotReadableError") {
-        setError("Your camera or mic is being used by another app. Close it and try again.");
+        setError("Your microphone is being used by another app. Close it and try again.");
       } else {
-        setError(e?.message || "Could not access camera/mic");
+        setError(e?.message || "Could not access the microphone");
       }
     }
   }, []);
 
   const stop = useCallback(() => {
+    activeRef.current = false;
     if (recogRef.current) {
       const r = recogRef.current;
       recogRef.current = null;
