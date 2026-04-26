@@ -9,8 +9,20 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as DecodeRouteImport } from './routes/decode'
+import { Route as CallRouteImport } from './routes/call'
 import { Route as IndexRouteImport } from './routes/index'
 
+const DecodeRoute = DecodeRouteImport.update({
+  id: '/decode',
+  path: '/decode',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CallRoute = CallRouteImport.update({
+  id: '/call',
+  path: '/call',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -19,28 +31,50 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/call': typeof CallRoute
+  '/decode': typeof DecodeRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/call': typeof CallRoute
+  '/decode': typeof DecodeRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/call': typeof CallRoute
+  '/decode': typeof DecodeRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths: '/' | '/call' | '/decode'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to: '/' | '/call' | '/decode'
+  id: '__root__' | '/' | '/call' | '/decode'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  CallRoute: typeof CallRoute
+  DecodeRoute: typeof DecodeRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/decode': {
+      id: '/decode'
+      path: '/decode'
+      fullPath: '/decode'
+      preLoaderRoute: typeof DecodeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/call': {
+      id: '/call'
+      path: '/call'
+      fullPath: '/call'
+      preLoaderRoute: typeof CallRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -53,16 +87,9 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  CallRoute: CallRoute,
+  DecodeRoute: DecodeRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-  }
-}
